@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "906413338798",
+    "project_id": "mchat-ad2af",
+    "storage_bucket": "mchat-ad2af.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:906413338798:android:d5737efbf591352d313d3f",
+        "android_client_info": {
+          "package_name": "com.example.m_chat"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDsZd6SPVmMptiUxvYbGDBgmdbyGkXRazE"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
