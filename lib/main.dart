@@ -57,7 +57,7 @@ class MChatApp extends StatelessWidget {
   }
 }
 
-// 1. Login සහ Sign Up තිරය (Username සහ Email Validation සමඟ)
+// 1. Login and Sign Up Screen with Confirm Password and Show/Hide Password Toggle
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
 
@@ -69,15 +69,21 @@ class _LoginScreenState extends State<LoginScreen> {
   final TextEditingController emailController = TextEditingController();
   final TextEditingController usernameController = TextEditingController();
   final TextEditingController passwordController = TextEditingController();
+  final TextEditingController confirmPasswordController =
+      TextEditingController();
 
   bool isLogin = true;
   bool isLoading = false;
+  bool _obscurePassword = true;
+  bool _obscureConfirmPassword = true;
 
   void authenticate() async {
     String email = emailController.text.trim().toLowerCase();
     String password = passwordController.text.trim();
+    String confirmPassword = confirmPasswordController.text.trim();
     String username = usernameController.text.trim();
 
+    // Validate email format
     if (email.isEmpty ||
         !email.endsWith('@gmail.com') ||
         email == '@gmail.com') {
@@ -92,11 +98,23 @@ class _LoginScreenState extends State<LoginScreen> {
       return;
     }
 
+    // Validate username during sign up
     if (!isLogin && username.isEmpty) {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('Please enter a username')));
+      return;
+    }
+
+    // Validate password matching during sign up
+    if (!isLogin && password != confirmPassword) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Passwords do not match! Please check again.'),
+        ),
+      );
       return;
     }
 
@@ -106,12 +124,13 @@ class _LoginScreenState extends State<LoginScreen> {
 
     try {
       if (isLogin) {
+        // Sign in existing user
         await FirebaseAuth.instance.signInWithEmailAndPassword(
           email: email,
           password: password,
         );
       } else {
-        // Username එක වෙන කවුරුහරි අරන් තියෙනවද බලනවා
+        // Check if username is already taken
         final querySnapshot = await FirebaseFirestore.instance
             .collection('users')
             .where('username', isEqualTo: username)
@@ -130,9 +149,11 @@ class _LoginScreenState extends State<LoginScreen> {
           return;
         }
 
+        // Create new user in Firebase Auth
         UserCredential userCredential = await FirebaseAuth.instance
             .createUserWithEmailAndPassword(email: email, password: password);
 
+        // Save user details to Firestore
         await FirebaseFirestore.instance
             .collection('users')
             .doc(userCredential.user!.uid)
@@ -185,6 +206,7 @@ class _LoginScreenState extends State<LoginScreen> {
               ),
               const SizedBox(height: 40),
 
+              // Username field shown only during sign up
               if (!isLogin) ...[
                 TextField(
                   controller: usernameController,
@@ -206,15 +228,58 @@ class _LoginScreenState extends State<LoginScreen> {
               ),
               const SizedBox(height: 15),
 
+              // Password field with eye toggle
               TextField(
                 controller: passwordController,
-                obscureText: true,
-                decoration: const InputDecoration(
+                obscureText: _obscurePassword,
+                decoration: InputDecoration(
                   hintText: 'Password',
-                  prefixIcon: Icon(Icons.lock, color: Colors.cyanAccent),
+                  prefixIcon: const Icon(Icons.lock, color: Colors.cyanAccent),
+                  suffixIcon: IconButton(
+                    icon: Icon(
+                      _obscurePassword
+                          ? Icons.visibility_off
+                          : Icons.visibility,
+                      color: Colors.grey,
+                    ),
+                    onPressed: () {
+                      setState(() {
+                        _obscurePassword = !_obscurePassword;
+                      });
+                    },
+                  ),
                 ),
               ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 15),
+
+              // Confirm Password field shown only during sign up
+              if (!isLogin) ...[
+                TextField(
+                  controller: confirmPasswordController,
+                  obscureText: _obscureConfirmPassword,
+                  decoration: InputDecoration(
+                    hintText: 'Confirm Password',
+                    prefixIcon: const Icon(
+                      Icons.lock_outline,
+                      color: Colors.cyanAccent,
+                    ),
+                    suffixIcon: IconButton(
+                      icon: Icon(
+                        _obscureConfirmPassword
+                            ? Icons.visibility_off
+                            : Icons.visibility,
+                        color: Colors.grey,
+                      ),
+                      onPressed: () {
+                        setState(() {
+                          _obscureConfirmPassword = !_obscureConfirmPassword;
+                        });
+                      },
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 15),
+              ],
 
               SizedBox(
                 width: double.infinity,
@@ -259,7 +324,7 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 }
 
-// 2. HomeScreen එක (participants array හරහා මැසේජ් යැවූ සජීවී චැට්ස් පෙන්වීම)
+// 2. WhatsApp style HomeScreen
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -343,7 +408,6 @@ class _HomeScreenState extends State<HomeScreen> {
                         chatRooms[index].data() as Map<String, dynamic>;
                     List participants = roomData['participants'] ?? [];
 
-                    // අනෙක් යූසර්ගේ UID එක සොයා ගැනීම
                     String otherUserId = participants.firstWhere(
                       (id) => id != currentUser!.uid,
                       orElse: () => '',
@@ -444,7 +508,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-// 3. Search Screen එක (+ button එකෙන් Open වන)
+// 3. Search Screen to find and start chat with registered users
 class SearchUserScreen extends StatefulWidget {
   const SearchUserScreen({super.key});
 
@@ -548,7 +612,7 @@ class _SearchUserScreenState extends State<SearchUserScreen> {
   }
 }
 
-// 4. Chat Screen එක (මැසේජ් යැවීමේදී participants array එක සේව් වීම)
+// 4. Real-time Chat Screen
 class ChatScreen extends StatefulWidget {
   final String name;
   final String receiverUid;
@@ -572,7 +636,7 @@ class _ChatScreenState extends State<ChatScreen> {
     ids.sort();
     String chatRoomId = ids.join('_');
 
-    // චැට් රූම් එකක් පළමු වරට හදන විට participants array එක ඇතුළත් කිරීම
+    // Create chat room with participants array if it does not exist
     final roomDoc = await FirebaseFirestore.instance
         .collection('chat_rooms')
         .doc(chatRoomId)
