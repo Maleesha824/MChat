@@ -1,14 +1,59 @@
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:intl/intl.dart';
 
 import 'firebase_options.dart';
+
+final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
+    FlutterLocalNotificationsPlugin();
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+
+  const AndroidInitializationSettings initializationSettingsAndroid =
+      AndroidInitializationSettings('@mipmap/ic_launcher');
+
+  const InitializationSettings initializationSettings = InitializationSettings(
+    android: initializationSettingsAndroid,
+  );
+
+  await flutterLocalNotificationsPlugin.initialize(initializationSettings);
+
   runApp(const MChatApp());
+}
+
+// Function to trigger Heads-up notification on top of phone
+void showNotification(String title, String body) async {
+  const AndroidNotificationDetails androidPlatformChannelSpecifics =
+      AndroidNotificationDetails(
+        'mchat_high_importance_channel',
+        'MChat High Importance Notifications',
+        importance: Importance.max,
+        priority: Priority.high,
+        ticker: 'ticker',
+        color: Colors.cyanAccent,
+        playSound: true,
+        enableVibration: true,
+      );
+
+  const NotificationDetails platformChannelSpecifics = NotificationDetails(
+    android: androidPlatformChannelSpecifics,
+  );
+
+  await flutterLocalNotificationsPlugin.show(
+    DateTime.now().millisecond,
+    title,
+    body,
+    platformChannelSpecifics,
+  );
 }
 
 class MChatApp extends StatelessWidget {
@@ -57,7 +102,7 @@ class MChatApp extends StatelessWidget {
   }
 }
 
-// 1. Login and Sign Up Screen with Confirm Password and Show/Hide Password Toggle
+// 1. Login and Sign Up Screen
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
 
@@ -83,22 +128,18 @@ class _LoginScreenState extends State<LoginScreen> {
     String confirmPassword = confirmPasswordController.text.trim();
     String username = usernameController.text.trim();
 
-    // Validate email format
     if (email.isEmpty ||
         !email.endsWith('@gmail.com') ||
         email == '@gmail.com') {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text(
-            'Please enter a valid email ending with @gmail.com (lowercase only)',
-          ),
+          content: Text('Please enter a valid email ending with @gmail.com'),
         ),
       );
       return;
     }
 
-    // Validate username during sign up
     if (!isLogin && username.isEmpty) {
       if (!mounted) return;
       ScaffoldMessenger.of(
@@ -107,14 +148,11 @@ class _LoginScreenState extends State<LoginScreen> {
       return;
     }
 
-    // Validate password matching during sign up
     if (!isLogin && password != confirmPassword) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Passwords do not match! Please check again.'),
-        ),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Passwords do not match!')));
       return;
     }
 
@@ -124,13 +162,11 @@ class _LoginScreenState extends State<LoginScreen> {
 
     try {
       if (isLogin) {
-        // Sign in existing user
         await FirebaseAuth.instance.signInWithEmailAndPassword(
           email: email,
           password: password,
         );
       } else {
-        // Check if username is already taken
         final querySnapshot = await FirebaseFirestore.instance
             .collection('users')
             .where('username', isEqualTo: username)
@@ -149,11 +185,9 @@ class _LoginScreenState extends State<LoginScreen> {
           return;
         }
 
-        // Create new user in Firebase Auth
         UserCredential userCredential = await FirebaseAuth.instance
             .createUserWithEmailAndPassword(email: email, password: password);
 
-        // Save user details to Firestore
         await FirebaseFirestore.instance
             .collection('users')
             .doc(userCredential.user!.uid)
@@ -161,6 +195,8 @@ class _LoginScreenState extends State<LoginScreen> {
               'uid': userCredential.user!.uid,
               'email': email,
               'username': username,
+              'profilePhoto': '',
+              'about': 'Hey there! I am using MChat.',
             });
       }
 
@@ -206,7 +242,6 @@ class _LoginScreenState extends State<LoginScreen> {
               ),
               const SizedBox(height: 40),
 
-              // Username field shown only during sign up
               if (!isLogin) ...[
                 TextField(
                   controller: usernameController,
@@ -228,7 +263,6 @@ class _LoginScreenState extends State<LoginScreen> {
               ),
               const SizedBox(height: 15),
 
-              // Password field with eye toggle
               TextField(
                 controller: passwordController,
                 obscureText: _obscurePassword,
@@ -252,7 +286,6 @@ class _LoginScreenState extends State<LoginScreen> {
               ),
               const SizedBox(height: 15),
 
-              // Confirm Password field shown only during sign up
               if (!isLogin) ...[
                 TextField(
                   controller: confirmPasswordController,
@@ -324,7 +357,7 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 }
 
-// 2. WhatsApp style HomeScreen
+// 2. HomeScreen
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -335,13 +368,135 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   final currentUser = FirebaseAuth.instance.currentUser;
   String searchQuery = "";
+  String currentUsername = "Loading...";
+  String profilePhoto = "";
+
+  @override
+  void initState() {
+    super.initState();
+    fetchCurrentUserData();
+  }
+
+  void fetchCurrentUserData() async {
+    if (currentUser != null) {
+      var doc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(currentUser!.uid)
+          .get();
+      if (doc.exists && mounted) {
+        setState(() {
+          currentUsername =
+              doc.data()?['username'] ?? currentUser!.email ?? 'User';
+          profilePhoto = doc.data()?['profilePhoto'] ?? '';
+        });
+      }
+    }
+  }
+
+  void deleteChatRoom(String chatRoomId) async {
+    bool? confirm = await showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title: const Text(
+          'Delete Chat',
+          style: TextStyle(color: Colors.cyanAccent),
+        ),
+        content: const Text(
+          'Are you sure you want to delete this entire chat?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text(
+              'Delete',
+              style: TextStyle(color: Colors.redAccent),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true) {
+      var messagesQuery = await FirebaseFirestore.instance
+          .collection('chat_rooms')
+          .doc(chatRoomId)
+          .collection('messages')
+          .get();
+
+      for (var doc in messagesQuery.docs) {
+        await doc.reference.delete();
+      }
+
+      await FirebaseFirestore.instance
+          .collection('chat_rooms')
+          .doc(chatRoomId)
+          .delete();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('MChat'),
+        title: GestureDetector(
+          onTap: () async {
+            await Navigator.push(
+              context,
+              MaterialPageRoute(builder: (context) => const ProfileScreen()),
+            );
+            fetchCurrentUserData();
+          },
+          child: Row(
+            children: [
+              CircleAvatar(
+                backgroundColor: Colors.cyanAccent,
+                radius: 18,
+                backgroundImage: profilePhoto.isNotEmpty
+                    ? (profilePhoto.startsWith('http')
+                          ? NetworkImage(profilePhoto)
+                          : MemoryImage(base64Decode(profilePhoto))
+                                as ImageProvider)
+                    : null,
+                child: profilePhoto.isEmpty
+                    ? const Icon(Icons.person, color: Colors.black, size: 20)
+                    : null,
+              ),
+              const SizedBox(width: 10),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'MChat',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  ),
+                  Text(
+                    currentUsername,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: Colors.cyanAccent,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.person_outline, color: Colors.cyanAccent),
+            onPressed: () async {
+              await Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const ProfileScreen()),
+              );
+              fetchCurrentUserData();
+            },
+          ),
           IconButton(
             icon: const Icon(Icons.logout, color: Colors.cyanAccent),
             onPressed: () async {
@@ -401,6 +556,16 @@ class _HomeScreenState extends State<HomeScreen> {
                   );
                 }
 
+                chatRooms.sort((a, b) {
+                  var dataA = a.data() as Map<String, dynamic>;
+                  var dataB = b.data() as Map<String, dynamic>;
+                  Timestamp? timeA = dataA['lastMessageTime'] as Timestamp?;
+                  Timestamp? timeB = dataB['lastMessageTime'] as Timestamp?;
+                  if (timeA == null) return 1;
+                  if (timeB == null) return -1;
+                  return timeB.compareTo(timeA);
+                });
+
                 return ListView.builder(
                   itemCount: chatRooms.length,
                   itemBuilder: (context, index) {
@@ -431,58 +596,115 @@ class _HomeScreenState extends State<HomeScreen> {
 
                         String username =
                             userData['username'] ?? userData['email'] ?? 'User';
+                        String userPic = userData['profilePhoto'] ?? '';
 
                         if (searchQuery.isNotEmpty &&
                             !username.toLowerCase().contains(searchQuery)) {
                           return const SizedBox.shrink();
                         }
 
-                        return StreamBuilder<QuerySnapshot>(
-                          stream: FirebaseFirestore.instance
-                              .collection('chat_rooms')
-                              .doc(chatRooms[index].id)
-                              .collection('messages')
-                              .orderBy('timestamp', descending: true)
-                              .limit(1)
-                              .snapshots(),
-                          builder: (context, msgSnapshot) {
-                            String lastMessage = 'Tap to chat';
-                            if (msgSnapshot.hasData &&
-                                msgSnapshot.data!.docs.isNotEmpty) {
-                              var lastMsgData =
-                                  msgSnapshot.data!.docs.first.data()
-                                      as Map<String, dynamic>;
-                              lastMessage = lastMsgData['message'] ?? '';
-                            }
+                        String lastMessage =
+                            roomData['lastMessage'] ?? 'Tap to chat';
+                        Timestamp? timestamp =
+                            roomData['lastMessageTime'] as Timestamp?;
+                        String timeString = '';
+                        if (timestamp != null) {
+                          timeString = DateFormat('hh:mm a')
+                              .format(timestamp.toDate());
+                        }
 
-                            return ListTile(
-                              leading: const CircleAvatar(
-                                backgroundColor: Colors.cyanAccent,
-                                child: Icon(Icons.person, color: Colors.black),
-                              ),
-                              title: Text(
-                                username,
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.bold,
+                        Map unreadMap = roomData['unreadCount'] ?? {};
+                        int unreadCount = unreadMap[currentUser!.uid] ?? 0;
+
+                        return ListTile(
+                          leading: CircleAvatar(
+                            backgroundColor: Colors.cyanAccent,
+                            backgroundImage: userPic.isNotEmpty
+                                ? (userPic.startsWith('http')
+                                      ? NetworkImage(userPic)
+                                      : MemoryImage(base64Decode(userPic))
+                                            as ImageProvider)
+                                : null,
+                            child: userPic.isEmpty
+                                ? const Icon(Icons.person, color: Colors.black)
+                                : null,
+                          ),
+                          title: Text(
+                            username,
+                            style: TextStyle(
+                              fontWeight: unreadCount > 0
+                                  ? FontWeight.bold
+                                  : FontWeight.normal,
+                              color: unreadCount > 0
+                                  ? Colors.white
+                                  : Colors.white70,
+                            ),
+                          ),
+                          subtitle: Text(
+                            lastMessage,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontWeight: unreadCount > 0
+                                  ? FontWeight.bold
+                                  : FontWeight.normal,
+                              color: unreadCount > 0
+                                  ? Colors.cyanAccent
+                                  : Colors.grey,
+                            ),
+                          ),
+                          trailing: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            crossAxisAlignment: CrossAxisAlignment.end,
+                            children: [
+                              Text(
+                                timeString,
+                                style: TextStyle(
+                                  color: unreadCount > 0
+                                      ? Colors.cyanAccent
+                                      : Colors.grey,
+                                  fontSize: 12,
                                 ),
                               ),
-                              subtitle: Text(
-                                lastMessage,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                              onTap: () {
-                                Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (context) => ChatScreen(
-                                      name: username,
-                                      receiverUid: userData['uid'],
+                              const SizedBox(height: 5),
+                              if (unreadCount > 0)
+                                Container(
+                                  padding: const EdgeInsets.all(6),
+                                  decoration: const BoxDecoration(
+                                    color: Colors.cyanAccent,
+                                    shape: BoxShape.circle,
+                                  ),
+                                  child: Text(
+                                    '$unreadCount',
+                                    style: const TextStyle(
+                                      color: Colors.black,
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.bold,
                                     ),
                                   ),
-                                );
-                              },
+                                ),
+                            ],
+                          ),
+                          onTap: () async {
+                            await FirebaseFirestore.instance
+                                .collection('chat_rooms')
+                                .doc(chatRooms[index].id)
+                                .update({'unreadCount.${currentUser!.uid}': 0});
+
+                            if (!context.mounted) return;
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) => ChatScreen(
+                                  chatRoomId: chatRooms[index].id,
+                                  name: username,
+                                  receiverUid: userData['uid'],
+                                ),
+                              ),
                             );
+                          },
+                          onLongPress: () {
+                            deleteChatRoom(chatRooms[index].id);
                           },
                         );
                       },
@@ -508,7 +730,191 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-// 3. Search Screen to find and start chat with registered users
+// 3. Profile Screen with Gallery Image Picker
+class ProfileScreen extends StatefulWidget {
+  const ProfileScreen({super.key});
+
+  @override
+  State<ProfileScreen> createState() => _ProfileScreenState();
+}
+
+class _ProfileScreenState extends State<ProfileScreen> {
+  final currentUser = FirebaseAuth.instance.currentUser;
+  final TextEditingController usernameController = TextEditingController();
+  final TextEditingController aboutController = TextEditingController();
+  String base64Image = "";
+  bool isLoading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    loadUserData();
+  }
+
+  void loadUserData() async {
+    var doc = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(currentUser!.uid)
+        .get();
+    if (doc.exists && mounted) {
+      setState(() {
+        usernameController.text = doc.data()?['username'] ?? '';
+        aboutController.text = doc.data()?['about'] ?? '';
+        base64Image = doc.data()?['profilePhoto'] ?? '';
+      });
+    }
+  }
+
+  // Pick image from phone gallery
+  Future<void> pickImageFromGallery() async {
+    final ImagePicker picker = ImagePicker();
+    final XFile? image = await picker.pickImage(
+      source: ImageSource.gallery,
+      imageQuality: 50,
+    );
+
+    if (image != null) {
+      File imageFile = File(image.path);
+      bytes = await imageFile.readAsBytes();
+      setState(() {
+        base64Image = base64Encode(bytes);
+      });
+    }
+  }
+
+  List<int> bytes = [];
+
+  void updateProfile() async {
+    setState(() {
+      isLoading = true;
+    });
+    try {
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(currentUser!.uid)
+          .update({
+            'username': usernameController.text.trim(),
+            'about': aboutController.text.trim(),
+            'profilePhoto': base64Image,
+          });
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Profile updated successfully!')),
+      );
+      Navigator.pop(context);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Failed to update: $e')));
+    } finally {
+      if (mounted) {
+        setState(() {
+          isLoading = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Edit Profile')),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(20.0),
+        child: Column(
+          children: [
+            Center(
+              child: GestureDetector(
+                onTap: pickImageFromGallery,
+                child: Stack(
+                  children: [
+                    CircleAvatar(
+                      radius: 55,
+                      backgroundColor: Colors.cyanAccent,
+                      backgroundImage: base64Image.isNotEmpty
+                          ? (base64Image.startsWith('http')
+                                ? NetworkImage(base64Image)
+                                : MemoryImage(base64Decode(base64Image))
+                                      as ImageProvider)
+                          : null,
+                      child: base64Image.isEmpty
+                          ? const Icon(
+                              Icons.person,
+                              size: 60,
+                              color: Colors.black,
+                            )
+                          : null,
+                    ),
+                    Positioned(
+                      bottom: 0,
+                      right: 0,
+                      child: Container(
+                        padding: const EdgeInsets.all(6),
+                        decoration: const BoxDecoration(
+                          color: Colors.cyanAccent,
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(
+                          Icons.camera_alt,
+                          color: Colors.black,
+                          size: 20,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 10),
+            const Text(
+              'Tap profile picture to change from gallery',
+              style: TextStyle(color: Colors.grey, fontSize: 12),
+            ),
+            const SizedBox(height: 30),
+            TextField(
+              controller: usernameController,
+              decoration: const InputDecoration(
+                labelText: 'Username',
+                prefixIcon: Icon(Icons.person, color: Colors.cyanAccent),
+              ),
+            ),
+            const SizedBox(height: 20),
+            TextField(
+              controller: aboutController,
+              decoration: const InputDecoration(
+                labelText: 'About (Bio)',
+                prefixIcon: Icon(Icons.info_outline, color: Colors.cyanAccent),
+              ),
+            ),
+            const SizedBox(height: 40),
+            SizedBox(
+              width: double.infinity,
+              height: 50,
+              child: ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.cyanAccent,
+                  foregroundColor: Colors.black,
+                ),
+                onPressed: isLoading ? null : updateProfile,
+                child: isLoading
+                    ? const CircularProgressIndicator(color: Colors.black)
+                    : const Text(
+                        'Save Changes',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// 4. Search Screen
 class SearchUserScreen extends StatefulWidget {
   const SearchUserScreen({super.key});
 
@@ -581,22 +987,61 @@ class _SearchUserScreenState extends State<SearchUserScreen> {
                   filteredUsers[index].data() as Map<String, dynamic>;
               String username =
                   userData['username'] ?? userData['email'] ?? 'User';
+              String userPic = userData['profilePhoto'] ?? '';
+              String about = userData['about'] ?? '';
 
               return ListTile(
-                leading: const CircleAvatar(
+                leading: CircleAvatar(
                   backgroundColor: Colors.cyanAccent,
-                  child: Icon(Icons.person, color: Colors.black),
+                  backgroundImage: userPic.isNotEmpty
+                      ? (userPic.startsWith('http')
+                            ? NetworkImage(userPic)
+                            : MemoryImage(base64Decode(userPic))
+                                  as ImageProvider)
+                      : null,
+                  child: userPic.isEmpty
+                      ? const Icon(Icons.person, color: Colors.black)
+                      : null,
                 ),
                 title: Text(
                   username,
                   style: const TextStyle(fontWeight: FontWeight.bold),
                 ),
-                subtitle: Text(userData['email'] ?? ''),
-                onTap: () {
+                subtitle: Text(
+                  about,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                onTap: () async {
+                  List<String> ids = [currentUser!.uid, userData['uid']];
+                  ids.sort();
+                  String chatRoomId = ids.join('_');
+
+                  final roomDoc = await FirebaseFirestore.instance
+                      .collection('chat_rooms')
+                      .doc(chatRoomId)
+                      .get();
+                  if (!roomDoc.exists) {
+                    await FirebaseFirestore.instance
+                        .collection('chat_rooms')
+                        .doc(chatRoomId)
+                        .set({
+                          'participants': [currentUser.uid, userData['uid']],
+                          'lastMessage': '',
+                          'lastMessageTime': FieldValue.serverTimestamp(),
+                          'unreadCount': {
+                            currentUser.uid: 0,
+                            userData['uid']: 0,
+                          },
+                        });
+                  }
+
+                  if (!context.mounted) return;
                   Navigator.pushReplacement(
                     context,
                     MaterialPageRoute(
                       builder: (context) => ChatScreen(
+                        chatRoomId: chatRoomId,
                         name: username,
                         receiverUid: userData['uid'],
                       ),
@@ -612,11 +1057,17 @@ class _SearchUserScreenState extends State<SearchUserScreen> {
   }
 }
 
-// 4. Real-time Chat Screen
+// 5. Chat Screen
 class ChatScreen extends StatefulWidget {
+  final String chatRoomId;
   final String name;
   final String receiverUid;
-  const ChatScreen({super.key, required this.name, required this.receiverUid});
+  const ChatScreen({
+    super.key,
+    required this.chatRoomId,
+    required this.name,
+    required this.receiverUid,
+  });
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -626,49 +1077,76 @@ class _ChatScreenState extends State<ChatScreen> {
   final TextEditingController messageController = TextEditingController();
   final currentUser = FirebaseAuth.instance.currentUser;
 
+  @override
+  void initState() {
+    super.initState();
+    markMessagesAsRead();
+  }
+
+  void markMessagesAsRead() async {
+    var msgDocs = await FirebaseFirestore.instance
+        .collection('chat_rooms')
+        .doc(widget.chatRoomId)
+        .collection('messages')
+        .where('senderId', isEqualTo: widget.receiverUid)
+        .where('isRead', isEqualTo: false)
+        .get();
+
+    for (var doc in msgDocs.docs) {
+      doc.reference.update({'isRead': true});
+    }
+  }
+
   void sendMessage() async {
     if (messageController.text.trim().isEmpty) return;
 
     String messageText = messageController.text.trim();
     messageController.clear();
 
-    List<String> ids = [currentUser!.uid, widget.receiverUid];
-    ids.sort();
-    String chatRoomId = ids.join('_');
-
-    // Create chat room with participants array if it does not exist
-    final roomDoc = await FirebaseFirestore.instance
+    var roomRef = FirebaseFirestore.instance
         .collection('chat_rooms')
-        .doc(chatRoomId)
-        .get();
-    if (!roomDoc.exists) {
-      await FirebaseFirestore.instance
-          .collection('chat_rooms')
-          .doc(chatRoomId)
-          .set({
-            'participants': [currentUser!.uid, widget.receiverUid],
-          });
+        .doc(widget.chatRoomId);
+    var roomDoc = await roomRef.get();
+
+    int currentReceiverUnread = 0;
+    if (roomDoc.exists) {
+      Map unreadMap = roomDoc.data()?['unreadCount'] ?? {};
+      currentReceiverUnread = unreadMap[widget.receiverUid] ?? 0;
+    } else {
+      await roomRef.set({
+        'participants': [currentUser!.uid, widget.receiverUid],
+      });
     }
 
+    await roomRef.collection('messages').add({
+      'senderId': currentUser!.uid,
+      'senderEmail': currentUser!.email,
+      'receiverId': widget.receiverUid,
+      'message': messageText,
+      'timestamp': FieldValue.serverTimestamp(),
+      'isRead': false,
+    });
+
+    await roomRef.update({
+      'lastMessage': messageText,
+      'lastMessageTime': FieldValue.serverTimestamp(),
+      'unreadCount.${widget.receiverUid}': currentReceiverUnread + 1,
+    });
+
+    showNotification(widget.name, messageText);
+  }
+
+  void deleteMessage(String messageId) async {
     await FirebaseFirestore.instance
         .collection('chat_rooms')
-        .doc(chatRoomId)
+        .doc(widget.chatRoomId)
         .collection('messages')
-        .add({
-          'senderId': currentUser!.uid,
-          'senderEmail': currentUser!.email,
-          'receiverId': widget.receiverUid,
-          'message': messageText,
-          'timestamp': FieldValue.serverTimestamp(),
-        });
+        .doc(messageId)
+        .delete();
   }
 
   @override
   Widget build(BuildContext context) {
-    List<String> ids = [currentUser!.uid, widget.receiverUid];
-    ids.sort();
-    String chatRoomId = ids.join('_');
-
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.name),
@@ -683,7 +1161,7 @@ class _ChatScreenState extends State<ChatScreen> {
             child: StreamBuilder<QuerySnapshot>(
               stream: FirebaseFirestore.instance
                   .collection('chat_rooms')
-                  .doc(chatRoomId)
+                  .doc(widget.chatRoomId)
                   .collection('messages')
                   .orderBy('timestamp', descending: true)
                   .snapshots(),
@@ -704,37 +1182,116 @@ class _ChatScreenState extends State<ChatScreen> {
                     final messageData =
                         messages[index].data() as Map<String, dynamic>;
                     bool isMe = messageData['senderId'] == currentUser!.uid;
+                    bool isRead = messageData['isRead'] ?? false;
+                    String messageId = messages[index].id;
 
-                    return Align(
-                      alignment: isMe
-                          ? Alignment.centerRight
-                          : Alignment.centerLeft,
-                      child: Container(
-                        padding: const EdgeInsets.all(12),
-                        margin: const EdgeInsets.symmetric(
-                          horizontal: 15,
-                          vertical: 5,
-                        ),
-                        decoration: BoxDecoration(
-                          color: isMe
-                              ? Colors.cyanAccent
-                              : const Color(0xFF2A2A2A),
-                          borderRadius: BorderRadius.only(
-                            topLeft: const Radius.circular(20),
-                            topRight: const Radius.circular(20),
-                            bottomLeft: isMe
-                                ? const Radius.circular(20)
-                                : Radius.zero,
-                            bottomRight: isMe
-                                ? Radius.zero
-                                : const Radius.circular(20),
+                    String messageTime = '';
+                    Timestamp? timestamp =
+                        messageData['timestamp'] as Timestamp?;
+                    if (timestamp != null) {
+                      messageTime = DateFormat('hh:mm a')
+                          .format(timestamp.toDate());
+                    }
+
+                    return GestureDetector(
+                      onLongPress: () {
+                        if (isMe) {
+                          showDialog(
+                            context: context,
+                            builder: (context) => AlertDialog(
+                              backgroundColor: const Color(0xFF1E1E1E),
+                              title: const Text(
+                                'Delete Message',
+                                style: TextStyle(color: Colors.cyanAccent),
+                              ),
+                              content: const Text(
+                                'Do you want to delete this message?',
+                              ),
+                              actions: [
+                                TextButton(
+                                  onPressed: () => Navigator.pop(context),
+                                  child: const Text(
+                                    'Cancel',
+                                    style: TextStyle(color: Colors.grey),
+                                  ),
+                                ),
+                                TextButton(
+                                  onPressed: () {
+                                    deleteMessage(messageId);
+                                    Navigator.pop(context);
+                                  },
+                                  child: const Text(
+                                    'Delete',
+                                    style: TextStyle(color: Colors.redAccent),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        }
+                      },
+                      child: Align(
+                        alignment: isMe
+                            ? Alignment.centerRight
+                            : Alignment.centerLeft,
+                        child: Container(
+                          padding: const EdgeInsets.all(12),
+                          margin: const EdgeInsets.symmetric(
+                            horizontal: 15,
+                            vertical: 5,
                           ),
-                        ),
-                        child: Text(
-                          messageData['message'],
-                          style: TextStyle(
-                            color: isMe ? Colors.black : Colors.white,
-                            fontSize: 16,
+                          decoration: BoxDecoration(
+                            color: isMe
+                                ? Colors.cyanAccent
+                                : const Color(0xFF2A2A2A),
+                            borderRadius: BorderRadius.only(
+                              topLeft: const Radius.circular(20),
+                              topRight: const Radius.circular(20),
+                              bottomLeft: isMe
+                                  ? const Radius.circular(20)
+                                  : Radius.zero,
+                              bottomRight: isMe
+                                  ? Radius.zero
+                                  : const Radius.circular(20),
+                            ),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                messageData['message'],
+                                style: TextStyle(
+                                  color: isMe ? Colors.black : Colors.white,
+                                  fontSize: 16,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    messageTime,
+                                    style: TextStyle(
+                                      color: isMe
+                                          ? Colors.black54
+                                          : Colors.grey,
+                                      fontSize: 10,
+                                    ),
+                                  ),
+                                  if (isMe) ...[
+                                    const SizedBox(width: 4),
+                                    Icon(
+                                      Icons.done_all,
+                                      size: 14,
+                                      color: isRead
+                                          ? Colors.blue
+                                          : Colors.black45,
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            ],
                           ),
                         ),
                       ),
