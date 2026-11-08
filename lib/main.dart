@@ -30,7 +30,7 @@ void main() async {
   runApp(const MChatApp());
 }
 
-// Function to trigger Heads-up notification on top of phone
+// Function to trigger notification when receiving a message
 void showNotification(String title, String body) async {
   const AndroidNotificationDetails androidPlatformChannelSpecifics =
       AndroidNotificationDetails(
@@ -196,7 +196,8 @@ class _LoginScreenState extends State<LoginScreen> {
               'email': email,
               'username': username,
               'profilePhoto': '',
-              'about': 'Hey there! I am using MChat.',
+              'about': '',
+              'isProfileCompleted': false,
             });
       }
 
@@ -597,6 +598,8 @@ class _HomeScreenState extends State<HomeScreen> {
                         String username =
                             userData['username'] ?? userData['email'] ?? 'User';
                         String userPic = userData['profilePhoto'] ?? '';
+                        String about =
+                            userData['about'] ?? 'Hey there! I am using MChat.';
 
                         if (searchQuery.isNotEmpty &&
                             !username.toLowerCase().contains(searchQuery)) {
@@ -605,6 +608,10 @@ class _HomeScreenState extends State<HomeScreen> {
 
                         String lastMessage =
                             roomData['lastMessage'] ?? 'Tap to chat';
+                        if (roomData['messageType'] == 'image') {
+                          lastMessage = '📷 Photo';
+                        }
+
                         Timestamp? timestamp =
                             roomData['lastMessageTime'] as Timestamp?;
                         String timeString = '';
@@ -699,6 +706,8 @@ class _HomeScreenState extends State<HomeScreen> {
                                   chatRoomId: chatRooms[index].id,
                                   name: username,
                                   receiverUid: userData['uid'],
+                                  receiverAbout: about,
+                                  receiverPhoto: userPic,
                                 ),
                               ),
                             );
@@ -730,7 +739,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-// 3. Profile Screen with Gallery Image Picker
+// 3. Profile Screen
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
 
@@ -743,6 +752,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   final TextEditingController usernameController = TextEditingController();
   final TextEditingController aboutController = TextEditingController();
   String base64Image = "";
+  bool isProfileCompleted = false;
   bool isLoading = false;
 
   @override
@@ -757,15 +767,23 @@ class _ProfileScreenState extends State<ProfileScreen> {
         .doc(currentUser!.uid)
         .get();
     if (doc.exists && mounted) {
+      String aboutText = doc.data()?['about'] ?? '';
+      String photo = doc.data()?['profilePhoto'] ?? '';
+      bool completed = doc.data()?['isProfileCompleted'] ?? false;
+
+      if (aboutText.isNotEmpty && aboutText != 'Hey there! I am using MChat.') {
+        completed = true;
+      }
+
       setState(() {
         usernameController.text = doc.data()?['username'] ?? '';
-        aboutController.text = doc.data()?['about'] ?? '';
-        base64Image = doc.data()?['profilePhoto'] ?? '';
+        aboutController.text = aboutText;
+        base64Image = photo;
+        isProfileCompleted = completed;
       });
     }
   }
 
-  // Pick image from phone gallery
   Future<void> pickImageFromGallery() async {
     final ImagePicker picker = ImagePicker();
     final XFile? image = await picker.pickImage(
@@ -796,8 +814,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
             'username': usernameController.text.trim(),
             'about': aboutController.text.trim(),
             'profilePhoto': base64Image,
+            'isProfileCompleted': true,
           });
       if (!mounted) return;
+      setState(() {
+        isProfileCompleted = true;
+      });
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Profile updated successfully!')),
       );
@@ -898,9 +920,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 onPressed: isLoading ? null : updateProfile,
                 child: isLoading
                     ? const CircularProgressIndicator(color: Colors.black)
-                    : const Text(
-                        'Save Changes',
-                        style: TextStyle(
+                    : Text(
+                        isProfileCompleted ? 'Edit Profile' : 'Save Changes',
+                        style: const TextStyle(
                           fontSize: 18,
                           fontWeight: FontWeight.bold,
                         ),
@@ -988,7 +1010,8 @@ class _SearchUserScreenState extends State<SearchUserScreen> {
               String username =
                   userData['username'] ?? userData['email'] ?? 'User';
               String userPic = userData['profilePhoto'] ?? '';
-              String about = userData['about'] ?? '';
+              String about =
+                  userData['about'] ?? 'Hey there! I am using MChat.';
 
               return ListTile(
                 leading: CircleAvatar(
@@ -1044,6 +1067,8 @@ class _SearchUserScreenState extends State<SearchUserScreen> {
                         chatRoomId: chatRoomId,
                         name: username,
                         receiverUid: userData['uid'],
+                        receiverAbout: about,
+                        receiverPhoto: userPic,
                       ),
                     ),
                   );
@@ -1057,16 +1082,20 @@ class _SearchUserScreenState extends State<SearchUserScreen> {
   }
 }
 
-// 5. Chat Screen
+// 5. Chat Screen with Text & Photo Support
 class ChatScreen extends StatefulWidget {
   final String chatRoomId;
   final String name;
   final String receiverUid;
+  final String receiverAbout;
+  final String receiverPhoto;
   const ChatScreen({
     super.key,
     required this.chatRoomId,
     required this.name,
     required this.receiverUid,
+    required this.receiverAbout,
+    required this.receiverPhoto,
   });
 
   @override
@@ -1097,11 +1126,16 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  void sendMessage() async {
-    if (messageController.text.trim().isEmpty) return;
+  // Send Message (Text or Image)
+  void sendMessage({String messageType = 'text', String content = ''}) async {
+    String textToSend = content.isEmpty
+        ? messageController.text.trim()
+        : content;
+    if (textToSend.isEmpty) return;
 
-    String messageText = messageController.text.trim();
-    messageController.clear();
+    if (content.isEmpty) {
+      messageController.clear();
+    }
 
     var roomRef = FirebaseFirestore.instance
         .collection('chat_rooms')
@@ -1110,7 +1144,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
     int currentReceiverUnread = 0;
     if (roomDoc.exists) {
-      Map unreadMap = roomDoc.data()?['unreadCount'] ?? {};
+      Map unreadMap = roomDoc.data()!['unreadCount'] ?? {};
       currentReceiverUnread = unreadMap[widget.receiverUid] ?? 0;
     } else {
       await roomRef.set({
@@ -1122,18 +1156,39 @@ class _ChatScreenState extends State<ChatScreen> {
       'senderId': currentUser!.uid,
       'senderEmail': currentUser!.email,
       'receiverId': widget.receiverUid,
-      'message': messageText,
+      'message': textToSend,
+      'messageType': messageType, // text, image
       'timestamp': FieldValue.serverTimestamp(),
       'isRead': false,
     });
 
+    String lastMsgDisplay = textToSend;
+    if (messageType == 'image') {
+      lastMsgDisplay = '📷 Photo';
+    }
+
     await roomRef.update({
-      'lastMessage': messageText,
+      'lastMessage': lastMsgDisplay,
+      'messageType': messageType,
       'lastMessageTime': FieldValue.serverTimestamp(),
       'unreadCount.${widget.receiverUid}': currentReceiverUnread + 1,
     });
+  }
 
-    showNotification(widget.name, messageText);
+  // Pick and Send Image from Gallery
+  void sendImage() async {
+    final ImagePicker picker = ImagePicker();
+    final XFile? image = await picker.pickImage(
+      source: ImageSource.gallery,
+      imageQuality: 50,
+    );
+
+    if (image != null) {
+      File imageFile = File(image.path);
+      List<int> imageBytes = await imageFile.readAsBytes();
+      String base64Image = base64Encode(imageBytes);
+      sendMessage(messageType: 'image', content: base64Image);
+    }
   }
 
   void deleteMessage(String messageId) async {
@@ -1149,7 +1204,44 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.name),
+        titleSpacing: 0,
+        title: Row(
+          children: [
+            CircleAvatar(
+              backgroundColor: Colors.cyanAccent,
+              radius: 18,
+              backgroundImage: widget.receiverPhoto.isNotEmpty
+                  ? (widget.receiverPhoto.startsWith('http')
+                        ? NetworkImage(widget.receiverPhoto)
+                        : MemoryImage(base64Decode(widget.receiverPhoto))
+                              as ImageProvider)
+                  : null,
+              child: widget.receiverPhoto.isEmpty
+                  ? const Icon(Icons.person, color: Colors.black, size: 20)
+                  : null,
+            ),
+            const SizedBox(width: 10),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  widget.name,
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                Text(
+                  widget.receiverAbout,
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: Colors.cyanAccent,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
         leading: IconButton(
           icon: const Icon(Icons.arrow_back, color: Colors.cyanAccent),
           onPressed: () => Navigator.pop(context),
@@ -1175,6 +1267,21 @@ class _ChatScreenState extends State<ChatScreen> {
 
                 final messages = snapshot.data!.docs;
 
+                if (messages.isNotEmpty) {
+                  var latestMsg = messages.first.data() as Map<String, dynamic>;
+                  if (latestMsg['senderId'] == widget.receiverUid &&
+                      (latestMsg['isNotified'] == null ||
+                          latestMsg['isNotified'] == false)) {
+                    showNotification(
+                      widget.name,
+                      latestMsg['messageType'] == 'image'
+                          ? '📷 Photo'
+                          : latestMsg['message'],
+                    );
+                    messages.first.reference.update({'isNotified': true});
+                  }
+                }
+
                 return ListView.builder(
                   reverse: true,
                   itemCount: messages.length,
@@ -1184,6 +1291,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     bool isMe = messageData['senderId'] == currentUser!.uid;
                     bool isRead = messageData['isRead'] ?? false;
                     String messageId = messages[index].id;
+                    String msgType = messageData['messageType'] ?? 'text';
 
                     String messageTime = '';
                     Timestamp? timestamp =
@@ -1235,10 +1343,13 @@ class _ChatScreenState extends State<ChatScreen> {
                             ? Alignment.centerRight
                             : Alignment.centerLeft,
                         child: Container(
-                          padding: const EdgeInsets.all(12),
+                          padding: const EdgeInsets.all(10),
                           margin: const EdgeInsets.symmetric(
                             horizontal: 15,
                             vertical: 5,
+                          ),
+                          constraints: BoxConstraints(
+                            maxWidth: MediaQuery.of(context).size.width * 0.7,
                           ),
                           decoration: BoxDecoration(
                             color: isMe
@@ -1259,13 +1370,24 @@ class _ChatScreenState extends State<ChatScreen> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Text(
-                                messageData['message'],
-                                style: TextStyle(
-                                  color: isMe ? Colors.black : Colors.white,
-                                  fontSize: 16,
+                              if (msgType == 'text')
+                                Text(
+                                  messageData['message'],
+                                  style: TextStyle(
+                                    color: isMe ? Colors.black : Colors.white,
+                                    fontSize: 16,
+                                  ),
+                                )
+                              else if (msgType == 'image')
+                                ClipRRect(
+                                  borderRadius: BorderRadius.circular(15),
+                                  child: Image.memory(
+                                    base64Decode(messageData['message']),
+                                    width: 200,
+                                    height: 200,
+                                    fit: BoxFit.cover,
+                                  ),
                                 ),
-                              ),
                               const SizedBox(height: 4),
                               Row(
                                 mainAxisSize: MainAxisSize.min,
@@ -1301,10 +1423,15 @@ class _ChatScreenState extends State<ChatScreen> {
               },
             ),
           ),
+          // Input Field with Gallery and Send buttons
           Padding(
             padding: const EdgeInsets.all(8.0),
             child: Row(
               children: [
+                IconButton(
+                  icon: const Icon(Icons.photo, color: Colors.cyanAccent),
+                  onPressed: sendImage,
+                ),
                 Expanded(
                   child: TextField(
                     controller: messageController,
@@ -1319,7 +1446,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   backgroundColor: Colors.cyanAccent,
                   child: IconButton(
                     icon: const Icon(Icons.send, color: Colors.black),
-                    onPressed: sendMessage,
+                    onPressed: () => sendMessage(messageType: 'text'),
                   ),
                 ),
               ],
