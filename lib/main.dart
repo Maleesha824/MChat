@@ -30,7 +30,7 @@ void main() async {
   runApp(const MChatApp());
 }
 
-// Function to trigger notification when receiving a message
+// Function to trigger notification
 void showNotification(String title, String body) async {
   const AndroidNotificationDetails androidPlatformChannelSpecifics =
       AndroidNotificationDetails(
@@ -358,7 +358,7 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 }
 
-// 2. HomeScreen
+// 2. HomeScreen with Global Background Notification Listener
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -376,6 +376,7 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     fetchCurrentUserData();
+    listenToIncomingMessages(); // Global listener for notifications across app
   }
 
   void fetchCurrentUserData() async {
@@ -392,6 +393,37 @@ class _HomeScreenState extends State<HomeScreen> {
         });
       }
     }
+  }
+
+  // Global listener to trigger notification whenever a chat room receives a new message meant for current user
+  void listenToIncomingMessages() {
+    if (currentUser == null) return;
+
+    FirebaseFirestore.instance
+        .collection('chat_rooms')
+        .where('participants', arrayContains: currentUser!.uid)
+        .snapshots()
+        .listen((snapshot) {
+          for (var change in snapshot.docChanges) {
+            if (change.type == DocumentChangeType.modified) {
+              var data = change.doc.data() as Map<String, dynamic>;
+              String lastSender = data['lastSender'] ?? '';
+
+              // If the last message was sent by someone else and not yet notified globally
+              if (lastSender.isNotEmpty && lastSender != currentUser!.uid) {
+                String lastMsg = data['lastMessage'] ?? '';
+                String senderName = data['lastSenderName'] ?? 'New Message';
+
+                // Check if notification already shown for this timestamp to prevent duplicate popups
+                bool alreadyNotified = data['isGloballyNotified'] ?? false;
+                if (!alreadyNotified) {
+                  showNotification(senderName, lastMsg);
+                  change.doc.reference.update({'isGloballyNotified': true});
+                }
+              }
+            }
+          }
+        });
   }
 
   void deleteChatRoom(String chatRoomId) async {
@@ -1082,7 +1114,7 @@ class _SearchUserScreenState extends State<SearchUserScreen> {
   }
 }
 
-// 5. Chat Screen with Text & Photo Support
+// 5. Chat Screen with Sender Info Updated in Room for Global Notifications
 class ChatScreen extends StatefulWidget {
   final String chatRoomId;
   final String name;
@@ -1105,11 +1137,25 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen> {
   final TextEditingController messageController = TextEditingController();
   final currentUser = FirebaseAuth.instance.currentUser;
+  String currentUserName = "User";
 
   @override
   void initState() {
     super.initState();
     markMessagesAsRead();
+    fetchMyName();
+  }
+
+  void fetchMyName() async {
+    var doc = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(currentUser!.uid)
+        .get();
+    if (doc.exists && mounted) {
+      setState(() {
+        currentUserName = doc.data()?['username'] ?? 'User';
+      });
+    }
   }
 
   void markMessagesAsRead() async {
@@ -1126,7 +1172,7 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  // Send Message (Text or Image)
+  // Send Message (Text or Image) with Sender metadata for Global Notification trigger
   void sendMessage({String messageType = 'text', String content = ''}) async {
     String textToSend = content.isEmpty
         ? messageController.text.trim()
@@ -1157,7 +1203,7 @@ class _ChatScreenState extends State<ChatScreen> {
       'senderEmail': currentUser!.email,
       'receiverId': widget.receiverUid,
       'message': textToSend,
-      'messageType': messageType, // text, image
+      'messageType': messageType,
       'timestamp': FieldValue.serverTimestamp(),
       'isRead': false,
     });
@@ -1171,6 +1217,10 @@ class _ChatScreenState extends State<ChatScreen> {
       'lastMessage': lastMsgDisplay,
       'messageType': messageType,
       'lastMessageTime': FieldValue.serverTimestamp(),
+      'lastSender': currentUser!.uid,
+      'lastSenderName': currentUserName,
+      'isGloballyNotified':
+          false, // Reset notification flag for new incoming message
       'unreadCount.${widget.receiverUid}': currentReceiverUnread + 1,
     });
   }
@@ -1266,21 +1316,6 @@ class _ChatScreenState extends State<ChatScreen> {
                 }
 
                 final messages = snapshot.data!.docs;
-
-                if (messages.isNotEmpty) {
-                  var latestMsg = messages.first.data() as Map<String, dynamic>;
-                  if (latestMsg['senderId'] == widget.receiverUid &&
-                      (latestMsg['isNotified'] == null ||
-                          latestMsg['isNotified'] == false)) {
-                    showNotification(
-                      widget.name,
-                      latestMsg['messageType'] == 'image'
-                          ? '📷 Photo'
-                          : latestMsg['message'],
-                    );
-                    messages.first.reference.update({'isNotified': true});
-                  }
-                }
 
                 return ListView.builder(
                   reverse: true,
